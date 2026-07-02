@@ -1,10 +1,22 @@
 name: Deploy
+
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+concurrency:
+  group: simultaneous-deployment
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: self-hosted
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: docker compose up -d --build --force-recreate
+      - run: docker image prune -f
