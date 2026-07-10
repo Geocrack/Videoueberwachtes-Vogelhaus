@@ -13,10 +13,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
-    runs-on: self-hosted
-    timeout-minutes: 10
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d --build --force-recreate
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r backend/requirements.txt
+      - run: pytest
+        working-directory: backend
+
+  deploy:
+    runs-on: self-hosted
+    needs: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build --force-recreate --wait
       - run: docker image prune -f
