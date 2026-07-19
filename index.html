@@ -9,5 +9,27 @@
     <h1>Das ist ein Test zum Hosten der Website</h1>
     <p>Videoüberwachtes Vogelhaus</p>
     <p>Test</p>
+
+    <h2>Live-Stream</h2>
+    <img id="live-stream" alt="Live-Stream wird geladen..." style="max-width: 100%;">
+
+    <script>
+        const bild = document.getElementById("live-stream");
+
+
+        const protokoll = location.protocol === "https:" ? "wss:" : "ws:";
+        const adresse = `${protokoll}//${location.host}/ws/live`;
+
+        const verbindung = new WebSocket(adresse);
+
+        verbindung.onmessage = (nachricht) => {
+
+            const bildAdresse = URL.createObjectURL(nachricht.data);
+
+            bild.onload = () => URL.revokeObjectURL(bildAdresse);
+
+            bild.src = bildAdresse;
+        };
+    </script>
 </body>
 </html>
