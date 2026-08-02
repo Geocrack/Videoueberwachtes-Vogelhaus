@@ -1,0 +1,24 @@
+name: Runner-Workspace aufraeumen
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+
+      - name: Vorher
+        run: ls -la "$GITHUB_WORKSPACE"
+
+      - name: Besitzrechte per Container zuruecksetzen
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/ws" alpine:3 \
+            chown -R "$(id -u):$(id -g)" /ws
+
+      - name: Reste entfernen
+        run: rm -rf "$GITHUB_WORKSPACE/nginx"
+
+      - name: Nachher
+        run: ls -la "$GITHUB_WORKSPACE"
