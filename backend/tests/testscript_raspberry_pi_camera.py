@@ -5,7 +5,8 @@ import itertools
 import websockets
 from PIL import Image, ImageDraw
 
-BACKEND_URL = "wss://vogelhaus.simgut.me/ws/camera"
+# BACKEND_URL = "ws://127.0.0.1:5000/ws/camera/vogelhaus-0"
+BACKEND_URL = "wss://vogelhaus.simgut.me/ws/camera/vogelhaus-0"
 
 def make_frame(n):
     img = Image.new("RGB", (320, 240), "darkgreen")
