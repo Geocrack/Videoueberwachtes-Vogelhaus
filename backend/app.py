@@ -1,18 +1,25 @@
+import json
 import os
-import re
 import shutil
 import subprocess
 import threading
-from datetime import datetime
 from pathlib import Path
+from datetime import datetime
 
-from flask import Flask, abort, jsonify, send_file
 from flask_sock import Sock
+from werkzeug.routing import BaseConverter
+from flask import Flask, abort, jsonify, request, send_file
+
+
+class SafeNameConverter(BaseConverter):
+    # Camera and video names may only contain simple characters, so URLs cannot escape the recordings folder
+    regex = r"[A-Za-z0-9_-]+"
+
 
 app = Flask(__name__)
+app.url_map.converters["name"] = SafeNameConverter
 sock = Sock(app)
 
-INDEX_HTML = Path(__file__).resolve().parent.parent / "index.html"
 RECORDINGS_DIR = Path(os.environ.get("RECORDINGS_DIR", Path(__file__).resolve().parent / "recordings"))
 
 state_lock = threading.Lock()
@@ -20,11 +27,8 @@ live_clients = {}  # camera_id -> set of connected live viewer websockets
 recordings = {}    # camera_id -> {"dir": folder of the running recording, "frame_number": int}
 
 
-def check_name(name):
-    # Only allow simple names so nobody can escape the recordings
-    # folder via the URL (e.g. camera_id = "..")
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
-        abort(400)
+def camera_dir(camera_id):
+    return RECORDINGS_DIR / camera_id
 
 
 @app.get("/health")
@@ -32,14 +36,10 @@ def health():
     return jsonify(status="ok")
 
 
-@app.get("/")
-def index():
-    return send_file(INDEX_HTML)
+# Live streaming
 
-
-@sock.route("/ws/camera/<camera_id>")
+@sock.route("/ws/camera/<name:camera_id>")
 def camera(ws, camera_id):
-    check_name(camera_id)
     print(f"Camera {camera_id} connected")
     while True:
         data = ws.receive()
@@ -55,16 +55,13 @@ def camera(ws, camera_id):
     print(f"Camera {camera_id} disconnected")
 
 
-@sock.route("/ws/live/<camera_id>")
+@sock.route("/ws/live/<name:camera_id>")
 def live(ws, camera_id):
-    check_name(camera_id)
     with state_lock:
         live_clients.setdefault(camera_id, set()).add(ws)
-    print(f"Live viewer for {camera_id} connected")
 
     try:
-        # Viewers never send anything; receive() just blocks
-        # until the connection is closed.
+        # Viewers never send anything; receive() just blocks until the connection is closed.
         while ws.receive() is not None:
             pass
     except Exception:
@@ -72,7 +69,6 @@ def live(ws, camera_id):
     finally:
         with state_lock:
             live_clients[camera_id].discard(ws)
-        print(f"Live viewer for {camera_id} disconnected")
 
 
 def broadcast_frame(camera_id, data):
@@ -87,6 +83,8 @@ def broadcast_frame(camera_id, data):
                 live_clients[camera_id].discard(client)
 
 
+# Recording
+
 def save_frame_if_recording(camera_id, data):
     with state_lock:
         recording = recordings.get(camera_id)
@@ -98,24 +96,22 @@ def save_frame_if_recording(camera_id, data):
     frame_path.write_bytes(data)
 
 
-@app.post("/api/cameras/<camera_id>/recording/start")
+@app.post("/api/cameras/<name:camera_id>/recording/start")
 def start_recording(camera_id):
-    check_name(camera_id)
     with state_lock:
         if camera_id in recordings:
             return jsonify(error="Recording already running"), 409
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        frames_dir = RECORDINGS_DIR / camera_id / timestamp
+        frames_dir = camera_dir(camera_id) / timestamp
         frames_dir.mkdir(parents=True, exist_ok=True)
         recordings[camera_id] = {"dir": frames_dir, "frame_number": 0}
 
     return jsonify(status="recording")
 
 
-@app.post("/api/cameras/<camera_id>/recording/stop")
+@app.post("/api/cameras/<name:camera_id>/recording/stop")
 def stop_recording(camera_id):
-    check_name(camera_id)
     with state_lock:
         recording = recordings.pop(camera_id, None)
 
@@ -151,24 +147,50 @@ def create_video(frames_dir):
     return video_path
 
 
-@app.get("/api/cameras/<camera_id>/videos")
+# Videos
+
+@app.get("/api/cameras/<name:camera_id>/videos")
 def list_videos(camera_id):
-    check_name(camera_id)
-    camera_dir = RECORDINGS_DIR / camera_id
-    videos = sorted((v.name for v in camera_dir.glob("*.mp4")), reverse=True)
+    videos = []
+    for video_file in camera_dir(camera_id).glob("*.mp4"):
+        videos.append(video_file.name)
+
+    videos.sort(reverse=True)
     return jsonify(videos=videos)
 
 
-@app.get("/api/cameras/<camera_id>/videos/<video_name>")
-def get_video(camera_id, video_name):
-    check_name(camera_id)
-    if not re.fullmatch(r"[A-Za-z0-9_-]+\.mp4", video_name):
-        abort(400)
-
-    video_path = RECORDINGS_DIR / camera_id / video_name
+@app.get("/api/cameras/<name:camera_id>/videos/<name:video_stem>.mp4")
+def get_video(camera_id, video_stem):
+    video_path = camera_dir(camera_id) / f"{video_stem}.mp4"
     if not video_path.is_file():
         abort(404)
     return send_file(video_path)
+
+
+# Camera info
+
+@app.get("/api/cameras")
+def list_cameras():
+    cameras = []
+    for folder in sorted(RECORDINGS_DIR.glob("*/")):
+        info_file = folder / "info.json"
+        if info_file.is_file():
+            info = json.loads(info_file.read_text(encoding="utf-8"))
+        else:
+            info = {}
+
+        cameras.append({"id": folder.name, **info})
+
+    return jsonify(cameras=cameras)
+
+
+@app.put("/api/cameras/<name:camera_id>/info")
+def save_camera_info(camera_id):
+    info = request.get_json()
+    folder = camera_dir(camera_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
+    return jsonify(status="saved")
 
 
 if __name__ == "__main__":

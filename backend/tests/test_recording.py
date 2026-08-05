@@ -51,5 +51,20 @@ def test_video_list_is_empty_initially(tmp_path, monkeypatch):
 def test_invalid_names_are_rejected(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
 
-    assert client.post("/api/cameras/cam.x/recording/start").status_code == 400
-    assert client.get("/api/cameras/cam-e/videos/not-a-video.txt").status_code == 400
+    # Names with special characters do not match any route -> 404
+    assert client.post("/api/cameras/cam.x/recording/start").status_code == 404
+    assert client.get("/api/cameras/cam-e/videos/not-a-video.txt").status_code == 404
+
+
+def test_camera_info_is_saved_and_listed(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    info = {"name": "Garten", "location": "Apfelbaum", "description": "Testhaus"}
+    response = client.put("/api/cameras/cam-f/info", json=info)
+    assert response.status_code == 200
+    assert (tmp_path / "cam-f" / "info.json").is_file()
+
+    response = client.get("/api/cameras")
+    assert response.status_code == 200
+    cameras = response.get_json()["cameras"]
+    assert {"id": "cam-f", **info} in cameras
