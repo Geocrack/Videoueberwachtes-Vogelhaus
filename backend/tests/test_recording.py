@@ -67,4 +67,6 @@ def test_camera_info_is_saved_and_listed(tmp_path, monkeypatch):
     response = client.get("/api/cameras")
     assert response.status_code == 200
     cameras = response.get_json()["cameras"]
-    assert {"id": "cam-f", **info} in cameras
+    camera = next(camera for camera in cameras if camera["id"] == "cam-f")
+    assert {key: camera[key] for key in info} == info
+    assert camera["online"] is False

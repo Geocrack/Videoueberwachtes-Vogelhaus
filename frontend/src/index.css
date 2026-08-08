@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+}
 
 @theme {
   --color-bg: #ffffff;
@@ -12,24 +15,16 @@
   --font-mono: ui-monospace, Consolas, monospace;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-bg: #16171d;
-    --color-surface: #1f2028;
-    --color-border: #2e303a;
-    --color-text: #9ca3af;
-    --color-heading: #f3f4f6;
-    --color-accent: #c084fc;
-
-    --font-sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  }
+html[data-theme="dark"] {
+  --color-bg: #16171d;
+  --color-surface: #1f2028;
+  --color-border: #2e303a;
+  --color-text: #9ca3af;
+  --color-heading: #f3f4f6;
+  --color-accent: #c084fc;
 }
 
 @layer base {
-  html {
-    color-scheme: light dark;
-  }
-
   body {
     background-color: var(--color-bg);
     color: var(--color-text);
