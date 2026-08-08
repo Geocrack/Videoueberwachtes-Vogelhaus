@@ -1,10 +1,19 @@
-import Header from "./components/header.tsx";
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router'
+
+import Header from './components/header.tsx'
+import LivestreamPage from './pages/livestream.tsx'
 
 function App() {
     return (
-        <div>
-            <Header />
-        </div>
+        <BrowserRouter>
+            <div className="min-h-dvh">
+                <Header />
+                <Routes>
+                    <Route path="/livestream" element={<LivestreamPage />} />
+                    <Route path="*" element={<Navigate to="/livestream" replace />} />
+                </Routes>
+            </div>
+        </BrowserRouter>
     )
 }
 
