@@ -1,6 +1,10 @@
+import Header from "./components/header.tsx";
+
 function App() {
     return (
-        <span>Vite React works</span>
+        <div>
+            <Header />
+        </div>
     )
 }
 
