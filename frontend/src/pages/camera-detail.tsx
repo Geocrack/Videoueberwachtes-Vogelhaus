@@ -45,7 +45,12 @@ function CameraDetailPage() {
     const { cameraId = '' } = useParams()
     const { cameras, error, loading, reload: reloadCameras } = useCameras()
     const camera = cameras.find((entry) => entry.id === cameraId)
-    const { videos, error: videosError, loading: videosLoading, reload: reloadVideos } = useVideos(cameraId)
+    const {
+        videos,
+        error: videosError,
+        loading: videosLoading,
+        reload: reloadVideos,
+    } = useVideos(cameraId, camera?.video_count)
 
     const [selectedName, setSelectedName] = useState<string | null>(null)
     const [dialog, setDialog] = useState<DialogState>(null)

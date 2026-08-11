@@ -31,6 +31,10 @@ STATE_WRITE_INTERVAL = float(os.environ.get("STATE_WRITE_INTERVAL", 30))
 POSTER_WRITE_INTERVAL = float(os.environ.get("POSTER_WRITE_INTERVAL", 60))
 FPS_WINDOW = 20
 MAX_TITLE_LENGTH = 120
+MAX_RECORDING_SECONDS = float(os.environ.get("MAX_RECORDING_SECONDS", 1800))
+MAX_RECORDING_FRAMES = int(os.environ.get("MAX_RECORDING_FRAMES", 20000))
+MIN_FREE_DISK_MB = float(os.environ.get("MIN_FREE_DISK_MB", 2000))
+WATCHDOG_INTERVAL = float(os.environ.get("WATCHDOG_INTERVAL", 10))
 
 state_lock = threading.Lock()
 names_lock = threading.Lock()
@@ -52,6 +56,14 @@ def write_atomic(path, data):
 
 def now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def free_disk_mb():
+    path = RECORDINGS_DIR if RECORDINGS_DIR.is_dir() else RECORDINGS_DIR.parent
+    try:
+        return shutil.disk_usage(path).free / (1024 * 1024)
+    except OSError:
+        return float("inf")
 
 
 @app.get("/health")
@@ -165,7 +177,14 @@ def note_frame(camera_id, data):
     if write_state:
         persist_camera_state(camera_id)
     if write_poster:
+        save_poster(camera_id, data)
+
+
+def save_poster(camera_id, data):
+    try:
         write_atomic(camera_dir(camera_id) / "poster.jpg", data)
+    except OSError as error:
+        print(f"[{camera_id}] Could not save poster: {error}")
 
 
 def store_frame_size(camera_id, data):
@@ -193,7 +212,10 @@ def persist_camera_state(camera_id):
             "height": state["height"],
         }
 
-    write_atomic(camera_dir(camera_id) / "state.json", json.dumps(stored, indent=2).encode("utf-8"))
+    try:
+        write_atomic(camera_dir(camera_id) / "state.json", json.dumps(stored, indent=2).encode("utf-8"))
+    except OSError as error:
+        print(f"[{camera_id}] Could not save state: {error}")
 
 
 def note_camera_disconnected(camera_id, last_frame=None):
@@ -211,7 +233,7 @@ def note_camera_disconnected(camera_id, last_frame=None):
 
     persist_camera_state(camera_id)
     if last_frame is not None and has_frames:
-        write_atomic(camera_dir(camera_id) / "poster.jpg", last_frame)
+        save_poster(camera_id, last_frame)
 
 
 def measure_fps(frame_times):
@@ -268,6 +290,12 @@ def camera_snapshot(camera_id):
 
 # Recording
 
+class RecordingError(Exception):
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
 def save_frame_if_recording(camera_id, data):
     with state_lock:
         recording = recordings.get(camera_id)
@@ -276,11 +304,44 @@ def save_frame_if_recording(camera_id, data):
         recording["frame_number"] += 1
         frame_path = recording["dir"] / f"frame_{recording['frame_number']:06d}.jpg"
 
-    frame_path.write_bytes(data)
+    try:
+        frame_path.write_bytes(data)
+    except OSError as error:
+        with state_lock:
+            current = recordings.get(camera_id)
+            if current is recording:
+                current["frame_number"] -= 1
+        print(f"[{camera_id}] Could not save frame: {error}")
+
+
+def finish_recording(camera_id):
+    with state_lock:
+        recording = recordings.pop(camera_id, None)
+
+    if recording is None:
+        raise RecordingError("No recording running", 409)
+
+    if recording["frame_number"] == 0:
+        shutil.rmtree(recording["dir"], ignore_errors=True)
+        raise RecordingError("No frames received, nothing saved", 409)
+
+    try:
+        return create_video(recording["dir"])
+    except FileNotFoundError:
+        raise RecordingError("Video creation failed (is ffmpeg installed?)", 500)
+    except subprocess.CalledProcessError as error:
+        details = error.stderr.decode("utf-8", "replace").strip()
+        print(f"[{camera_id}] ffmpeg failed: {details}")
+        raise RecordingError(
+            f"Video creation failed: {details.splitlines()[-1] if details else 'unknown error'}", 500
+        )
 
 
 @app.post("/api/cameras/<name:camera_id>/recording/start")
 def start_recording(camera_id):
+    if free_disk_mb() < MIN_FREE_DISK_MB:
+        return jsonify(error="Not enough free disk space to start a recording"), 507
+
     with state_lock:
         if camera_id in recordings:
             return jsonify(error="Recording already running"), 409
@@ -288,7 +349,11 @@ def start_recording(camera_id):
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         frames_dir = camera_dir(camera_id) / timestamp
         frames_dir.mkdir(parents=True, exist_ok=True)
-        recordings[camera_id] = {"dir": frames_dir, "frame_number": 0}
+        recordings[camera_id] = {
+            "dir": frames_dir,
+            "frame_number": 0,
+            "started_at": time.time(),
+        }
 
     return jsonify(status="recording")
 
@@ -297,27 +362,68 @@ def start_recording(camera_id):
 def stop_recording(camera_id):
     title = requested_title()
 
-    with state_lock:
-        recording = recordings.pop(camera_id, None)
-
-    if recording is None:
-        return jsonify(error="No recording running"), 409
-
-    if recording["frame_number"] == 0:
-        shutil.rmtree(recording["dir"])
-        return jsonify(error="No frames received, nothing saved"), 409
-
     try:
-        video_path = create_video(recording["dir"])
-    except FileNotFoundError:
-        return jsonify(error="Video creation failed (is ffmpeg installed?)"), 500
-    except subprocess.CalledProcessError as error:
-        details = error.stderr.decode("utf-8", "replace").strip()
-        print(f"[{camera_id}] ffmpeg failed: {details}")
-        return jsonify(error=f"Video creation failed: {details.splitlines()[-1] if details else 'unknown error'}"), 500
+        video_path = finish_recording(camera_id)
+    except RecordingError as error:
+        return jsonify(error=str(error)), error.status
 
     store_video_name(camera_id, video_path.name, title)
     return jsonify(status="saved", video=video_path.name, name=title)
+
+
+def overdue_recordings():
+    now = time.time()
+    low_on_disk = free_disk_mb() < MIN_FREE_DISK_MB
+    overdue = []
+
+    with state_lock:
+        for camera_id, recording in recordings.items():
+            if now - recording["started_at"] >= MAX_RECORDING_SECONDS:
+                overdue.append((camera_id, "time limit reached"))
+            elif recording["frame_number"] >= MAX_RECORDING_FRAMES:
+                overdue.append((camera_id, "frame limit reached"))
+            elif low_on_disk:
+                overdue.append((camera_id, "free disk space is running out"))
+
+    return overdue
+
+
+def stop_overdue_recordings():
+    for camera_id, reason in overdue_recordings():
+        print(f"[{camera_id}] Stopping recording automatically: {reason}")
+        try:
+            video_path = finish_recording(camera_id)
+            print(f"[{camera_id}] Saved {video_path.name}")
+        except RecordingError as error:
+            print(f"[{camera_id}] Automatic stop failed: {error}")
+
+
+def recover_interrupted_recordings():
+    for frames_dir in sorted(RECORDINGS_DIR.glob("*/*/")):
+        if not frames_dir.is_dir():
+            continue
+
+        if not any(frames_dir.glob("frame_*.jpg")):
+            shutil.rmtree(frames_dir, ignore_errors=True)
+            continue
+
+        print(f"Recovering interrupted recording {frames_dir}")
+        try:
+            video_path = create_video(frames_dir)
+            print(f"Recovered {video_path.name}")
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError) as error:
+            print(f"Could not recover {frames_dir}: {error}")
+
+
+def recording_watchdog():
+    recover_interrupted_recordings()
+
+    while True:
+        time.sleep(WATCHDOG_INTERVAL)
+        try:
+            stop_overdue_recordings()
+        except Exception as error:
+            print(f"Recording watchdog error: {error}")
 
 
 def create_video(frames_dir):
@@ -482,6 +588,9 @@ def save_camera_info(camera_id):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "info.json").write_text(json.dumps(info, indent=2), encoding="utf-8")
     return jsonify(status="saved")
+
+
+threading.Thread(target=recording_watchdog, name="recording-watchdog", daemon=True).start()
 
 
 if __name__ == "__main__":

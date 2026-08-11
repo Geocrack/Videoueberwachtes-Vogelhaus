@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { fetchVideos, type Video } from '../api/cameras.ts'
 
-export function useVideos(cameraId: string) {
+export function useVideos(cameraId: string, videoCount?: number) {
     const [videos, setVideos] = useState<Video[]>([])
     const [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState(true)
@@ -25,7 +25,7 @@ export function useVideos(cameraId: string) {
         void load()
 
         return () => controller.abort()
-    }, [cameraId, reloadToken])
+    }, [cameraId, videoCount, reloadToken])
 
     return { videos, error, loading, reload: () => setReloadToken((token) => token + 1) }
 }

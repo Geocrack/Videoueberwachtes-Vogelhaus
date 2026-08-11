@@ -118,6 +118,86 @@ def test_renaming_an_unknown_video_is_rejected(tmp_path, monkeypatch):
     assert response.status_code == 404
 
 
+def test_recording_is_stopped_when_the_time_limit_is_reached(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "MAX_RECORDING_SECONDS", 60)
+
+    client.post("/api/cameras/cam-k/recording/start")
+    for _ in range(3):
+        app_module.save_frame_if_recording("cam-k", jpeg_frame())
+
+    assert app_module.overdue_recordings() == []
+
+    app_module.recordings["cam-k"]["started_at"] -= 61
+    assert app_module.overdue_recordings() == [("cam-k", "time limit reached")]
+
+    app_module.stop_overdue_recordings()
+    assert "cam-k" not in app_module.recordings
+    assert len(client.get("/api/cameras/cam-k/videos").get_json()["videos"]) == 1
+
+
+def test_recording_is_stopped_when_the_frame_limit_is_reached(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(app_module, "MAX_RECORDING_FRAMES", 3)
+
+    client.post("/api/cameras/cam-l/recording/start")
+    for _ in range(3):
+        app_module.save_frame_if_recording("cam-l", jpeg_frame())
+
+    assert app_module.overdue_recordings() == [("cam-l", "frame limit reached")]
+
+    app_module.stop_overdue_recordings()
+    assert "cam-l" not in app_module.recordings
+    assert len(client.get("/api/cameras/cam-l/videos").get_json()["videos"]) == 1
+
+
+def test_recording_is_stopped_and_refused_when_disk_is_full(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    client.post("/api/cameras/cam-m/recording/start")
+    for _ in range(3):
+        app_module.save_frame_if_recording("cam-m", jpeg_frame())
+
+    monkeypatch.setattr(app_module, "free_disk_mb", lambda: 1.0)
+    assert app_module.overdue_recordings() == [("cam-m", "free disk space is running out")]
+
+    app_module.stop_overdue_recordings()
+    assert "cam-m" not in app_module.recordings
+
+    assert client.post("/api/cameras/cam-m/recording/start").status_code == 507
+
+
+def test_unwritable_frames_do_not_break_the_camera_connection(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    client.post("/api/cameras/cam-n/recording/start")
+    app_module.recordings["cam-n"]["dir"] = tmp_path / "cam-n" / "gone"
+
+    app_module.save_frame_if_recording("cam-n", jpeg_frame())
+
+    assert app_module.recordings["cam-n"]["frame_number"] == 0
+    app_module.recordings.pop("cam-n", None)
+
+
+def test_interrupted_recording_is_recovered(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    client.post("/api/cameras/cam-o/recording/start")
+    for _ in range(3):
+        app_module.save_frame_if_recording("cam-o", jpeg_frame())
+
+    frames_dir = app_module.recordings.pop("cam-o")["dir"]
+    empty_dir = tmp_path / "cam-o" / "2020-01-01_00-00-00"
+    empty_dir.mkdir(parents=True)
+
+    app_module.recover_interrupted_recordings()
+
+    assert not frames_dir.exists()
+    assert not empty_dir.exists()
+    videos = client.get("/api/cameras/cam-o/videos").get_json()["videos"]
+    assert [video["name"] for video in videos] == [f"{frames_dir.name}.mp4"]
+
+
 def test_invalid_names_are_rejected(tmp_path, monkeypatch):
     client = make_client(tmp_path, monkeypatch)
 
