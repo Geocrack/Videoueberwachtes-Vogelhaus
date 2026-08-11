@@ -26,3 +26,25 @@ export function formatRelativeTime(isoTimestamp: string | null): string {
 export function formatCount(value: number, singular: string, plural: string) {
     return `${value} ${value === 1 ? singular : plural}`
 }
+
+const dateTime = new Intl.DateTimeFormat('de', { dateStyle: 'medium', timeStyle: 'short' })
+
+export function formatTimestamp(isoTimestamp: string): string {
+    const timestamp = new Date(isoTimestamp).getTime()
+    if (Number.isNaN(timestamp)) return 'unbekannt'
+
+    return dateTime.format(timestamp)
+}
+
+const SIZE_UNITS = ['B', 'kB', 'MB', 'GB']
+
+export function formatFileSize(bytes: number): string {
+    let value = bytes
+    let unit = 0
+    while (value >= 1024 && unit < SIZE_UNITS.length - 1) {
+        value /= 1024
+        unit += 1
+    }
+
+    return `${value.toFixed(unit === 0 ? 0 : 1).replace('.', ',')} ${SIZE_UNITS[unit]}`
+}

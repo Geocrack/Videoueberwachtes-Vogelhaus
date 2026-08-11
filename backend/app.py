@@ -30,8 +30,10 @@ ONLINE_TIMEOUT_SECONDS = float(os.environ.get("ONLINE_TIMEOUT_SECONDS", 15))
 STATE_WRITE_INTERVAL = float(os.environ.get("STATE_WRITE_INTERVAL", 30))
 POSTER_WRITE_INTERVAL = float(os.environ.get("POSTER_WRITE_INTERVAL", 60))
 FPS_WINDOW = 20
+MAX_TITLE_LENGTH = 120
 
 state_lock = threading.Lock()
+names_lock = threading.Lock()
 live_clients = {}  # camera_id -> set of connected live viewer websockets
 recordings = {}    # camera_id -> {"dir": folder of the running recording, "frame_number": int}
 camera_state = {}  # camera_id -> live connection state, see note_camera_connected()
@@ -293,6 +295,8 @@ def start_recording(camera_id):
 
 @app.post("/api/cameras/<name:camera_id>/recording/stop")
 def stop_recording(camera_id):
+    title = requested_title()
+
     with state_lock:
         recording = recordings.pop(camera_id, None)
 
@@ -305,17 +309,23 @@ def stop_recording(camera_id):
 
     try:
         video_path = create_video(recording["dir"])
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except FileNotFoundError:
         return jsonify(error="Video creation failed (is ffmpeg installed?)"), 500
+    except subprocess.CalledProcessError as error:
+        details = error.stderr.decode("utf-8", "replace").strip()
+        print(f"[{camera_id}] ffmpeg failed: {details}")
+        return jsonify(error=f"Video creation failed: {details.splitlines()[-1] if details else 'unknown error'}"), 500
 
-    return jsonify(status="saved", video=video_path.name)
+    store_video_name(camera_id, video_path.name, title)
+    return jsonify(status="saved", video=video_path.name, name=title)
 
 
 def create_video(frames_dir):
     video_path = frames_dir.parent / f"{frames_dir.name}.mp4"
     subprocess.run(
         [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-nostdin",
+            "-loglevel", "error",
             "-framerate", "5",
             "-i", str(frames_dir / "frame_%06d.jpg"),
             "-c:v", "libx264",
@@ -323,6 +333,7 @@ def create_video(frames_dir):
             str(video_path),
         ],
         check=True,
+        capture_output=True,
     )
     shutil.rmtree(frames_dir)
     return video_path
@@ -330,14 +341,77 @@ def create_video(frames_dir):
 
 # Videos
 
+def video_names_file(camera_id):
+    return camera_dir(camera_id) / "video_names.json"
+
+
+def read_video_names(camera_id):
+    try:
+        names = json.loads(video_names_file(camera_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+    return names if isinstance(names, dict) else {}
+
+
+def store_video_name(camera_id, video_name, title):
+    with names_lock:
+        names = read_video_names(camera_id)
+        if title:
+            names[video_name] = title
+        else:
+            names.pop(video_name, None)
+
+        write_atomic(video_names_file(camera_id), json.dumps(names, indent=2).encode("utf-8"))
+
+
+def requested_title():
+    payload = request.get_json(silent=True) or {}
+    return str(payload.get("name", "")).strip()[:MAX_TITLE_LENGTH]
+
+
+def video_entry(video_file, names):
+    try:
+        created = datetime.strptime(video_file.stem, "%Y-%m-%d_%H-%M-%S")
+    except ValueError:
+        created = datetime.fromtimestamp(video_file.stat().st_mtime)
+
+    return {
+        "name": video_file.name,
+        "title": names.get(video_file.name, ""),
+        "size": video_file.stat().st_size,
+        "created": created.astimezone().isoformat(timespec="seconds"),
+    }
+
+
 @app.get("/api/cameras/<name:camera_id>/videos")
 def list_videos(camera_id):
-    videos = []
-    for video_file in camera_dir(camera_id).glob("*.mp4"):
-        videos.append(video_file.name)
-
-    videos.sort(reverse=True)
+    names = read_video_names(camera_id)
+    videos = [video_entry(video_file, names) for video_file in camera_dir(camera_id).glob("*.mp4")]
+    videos.sort(key=lambda video: video["name"], reverse=True)
     return jsonify(videos=videos)
+
+
+@app.put("/api/cameras/<name:camera_id>/videos/<name:video_stem>/name")
+def rename_video(camera_id, video_stem):
+    video_path = camera_dir(camera_id) / f"{video_stem}.mp4"
+    if not video_path.is_file():
+        abort(404)
+
+    title = requested_title()
+    store_video_name(camera_id, video_path.name, title)
+    return jsonify(status="saved", name=title)
+
+
+@app.delete("/api/cameras/<name:camera_id>/videos/<name:video_stem>")
+def delete_video(camera_id, video_stem):
+    video_path = camera_dir(camera_id) / f"{video_stem}.mp4"
+    if not video_path.is_file():
+        abort(404)
+
+    video_path.unlink()
+    store_video_name(camera_id, video_path.name, "")
+    return jsonify(status="deleted")
 
 
 @app.get("/api/cameras/<name:camera_id>/videos/<name:video_stem>.mp4")

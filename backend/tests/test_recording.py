@@ -1,9 +1,30 @@
+from io import BytesIO
+
+from PIL import Image
+
 import app as app_module
 
 
 def make_client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "RECORDINGS_DIR", tmp_path)
     return app_module.app.test_client()
+
+
+def jpeg_frame():
+    buffer = BytesIO()
+    Image.new("RGB", (64, 48), "green").save(buffer, "JPEG")
+    return buffer.getvalue()
+
+
+def record_video(client, camera_id, name=None):
+    client.post(f"/api/cameras/{camera_id}/recording/start")
+    for _ in range(3):
+        app_module.save_frame_if_recording(camera_id, jpeg_frame())
+
+    payload = {} if name is None else {"name": name}
+    response = client.post(f"/api/cameras/{camera_id}/recording/stop", json=payload)
+    assert response.status_code == 200
+    return response.get_json()["video"]
 
 
 def test_start_and_stop_without_frames(tmp_path, monkeypatch):
@@ -46,6 +67,55 @@ def test_video_list_is_empty_initially(tmp_path, monkeypatch):
     response = client.get("/api/cameras/cam-d/videos")
     assert response.status_code == 200
     assert response.get_json() == {"videos": []}
+
+
+def test_recording_is_saved_with_the_given_name(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    video_name = record_video(client, "cam-g", "  Blaumeise am Futterhaus  ")
+
+    videos = client.get("/api/cameras/cam-g/videos").get_json()["videos"]
+    assert [(video["name"], video["title"]) for video in videos] == [
+        (video_name, "Blaumeise am Futterhaus")
+    ]
+    assert videos[0]["size"] > 0
+    assert videos[0]["created"].startswith(video_name[:10])
+
+
+def test_video_can_be_renamed_afterwards(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    video_name = record_video(client, "cam-h")
+    stem = video_name.removesuffix(".mp4")
+    assert client.get("/api/cameras/cam-h/videos").get_json()["videos"][0]["title"] == ""
+
+    response = client.put(f"/api/cameras/cam-h/videos/{stem}/name", json={"name": "Kohlmeise"})
+    assert response.status_code == 200
+    assert client.get("/api/cameras/cam-h/videos").get_json()["videos"][0]["title"] == "Kohlmeise"
+
+    client.put(f"/api/cameras/cam-h/videos/{stem}/name", json={"name": "   "})
+    assert client.get("/api/cameras/cam-h/videos").get_json()["videos"][0]["title"] == ""
+
+
+def test_video_can_be_deleted(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    video_name = record_video(client, "cam-j", "Specht")
+    stem = video_name.removesuffix(".mp4")
+
+    assert client.delete(f"/api/cameras/cam-j/videos/{stem}").status_code == 200
+    assert client.get("/api/cameras/cam-j/videos").get_json()["videos"] == []
+    assert not (tmp_path / "cam-j" / video_name).exists()
+    assert video_name not in app_module.read_video_names("cam-j")
+
+    assert client.delete(f"/api/cameras/cam-j/videos/{stem}").status_code == 404
+
+
+def test_renaming_an_unknown_video_is_rejected(tmp_path, monkeypatch):
+    client = make_client(tmp_path, monkeypatch)
+
+    response = client.put("/api/cameras/cam-i/videos/2026-01-01_00-00-00/name", json={"name": "x"})
+    assert response.status_code == 404
 
 
 def test_invalid_names_are_rejected(tmp_path, monkeypatch):
