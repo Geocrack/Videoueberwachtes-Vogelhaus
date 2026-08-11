@@ -236,7 +236,6 @@ def camera_snapshot(camera_id):
     with state_lock:
         state = camera_state.get(camera_id)
         recording = camera_id in recordings
-        viewers = len(live_clients.get(camera_id, ()))
 
         if state is None:
             connected, last_frame_at, frame_times, history = False, None, [], None
@@ -272,7 +271,6 @@ def camera_snapshot(camera_id):
         **history,
         "online": online,
         "recording": recording,
-        "viewers": viewers,
         "fps": measure_fps(frame_times) if online else None,
     }
 

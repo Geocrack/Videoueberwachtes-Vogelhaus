@@ -5,7 +5,6 @@ export type Camera = {
     description?: string
     online: boolean
     recording: boolean
-    viewers: number
     fps: number | null
     first_seen: string | null
     last_seen: string | null

@@ -1,4 +1,4 @@
-import { Activity, Clock, Eye, Film, Monitor, VideoOff } from 'lucide-react'
+import { Activity, Clock, Film, Monitor, VideoOff } from 'lucide-react'
 import type { ComponentType } from 'react'
 
 import { posterUrl, type Camera } from '../api/cameras.ts'
@@ -70,10 +70,7 @@ function CameraTile({ camera }: CameraTileProps) {
 
                 <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs opacity-70">
                     {camera.online ? (
-                        <>
-                            {camera.fps !== null && <Stat icon={Activity}>{`${camera.fps} fps`}</Stat>}
-                            <Stat icon={Eye}>{formatCount(camera.viewers, 'Zuschauer', 'Zuschauer')}</Stat>
-                        </>
+                        camera.fps !== null && <Stat icon={Activity}>{`${camera.fps} fps`}</Stat>
                     ) : (
                         <Stat icon={Clock}>{formatRelativeTime(camera.last_seen)}</Stat>
                     )}
