@@ -126,8 +126,6 @@ def note_camera_connected(camera_id):
                 "connections": 0,
                 "last_frame_at": None,
                 "frame_times": deque(maxlen=FPS_WINDOW),
-                "frames_total": stored.get("frames_total", 0),
-                "first_seen": stored.get("first_seen"),
                 "last_seen": stored.get("last_seen"),
                 "width": stored.get("width"),
                 "height": stored.get("height"),
@@ -150,10 +148,7 @@ def note_frame(camera_id, data):
 
         state["last_frame_at"] = now
         state["frame_times"].append(now)
-        state["frames_total"] += 1
         state["last_seen"] = timestamp
-        if state["first_seen"] is None:
-            state["first_seen"] = timestamp
 
         needs_size = state["width"] is None
         write_state = now - state["state_written_at"] >= STATE_WRITE_INTERVAL
@@ -191,9 +186,7 @@ def persist_camera_state(camera_id):
             return
 
         stored = {
-            "first_seen": state["first_seen"],
             "last_seen": state["last_seen"],
-            "frames_total": state["frames_total"],
             "width": state["width"],
             "height": state["height"],
         }
@@ -244,9 +237,7 @@ def camera_snapshot(camera_id):
             last_frame_at = state["last_frame_at"]
             frame_times = list(state["frame_times"])
             history = {
-                "first_seen": state["first_seen"],
                 "last_seen": state["last_seen"],
-                "frames_total": state["frames_total"],
                 "width": state["width"],
                 "height": state["height"],
             }
@@ -254,9 +245,7 @@ def camera_snapshot(camera_id):
     if history is None:
         stored = read_stored_state(camera_id)
         history = {
-            "first_seen": stored.get("first_seen"),
             "last_seen": stored.get("last_seen"),
-            "frames_total": stored.get("frames_total", 0),
             "width": stored.get("width"),
             "height": stored.get("height"),
         }

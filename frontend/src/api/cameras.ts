@@ -6,9 +6,7 @@ export type Camera = {
     online: boolean
     recording: boolean
     fps: number | null
-    first_seen: string | null
     last_seen: string | null
-    frames_total: number
     width: number | null
     height: number | null
     video_count: number
