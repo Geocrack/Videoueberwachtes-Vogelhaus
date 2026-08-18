@@ -1,5 +1,6 @@
-import { Activity, Clock, Eye, Film, Monitor, VideoOff } from 'lucide-react'
+import { Activity, Clock, Film, Monitor, VideoOff } from 'lucide-react'
 import type { ComponentType } from 'react'
+import { Link } from 'react-router'
 
 import { posterUrl, type Camera } from '../api/cameras.ts'
 import { useLiveFrames } from '../hooks/use-live-frames.ts'
@@ -28,7 +29,11 @@ function CameraTile({ camera }: CameraTileProps) {
     const title = camera.name ?? camera.id
 
     return (
-        <article className="card overflow-hidden border border-border bg-surface">
+        <Link
+            to={`/livestream/${camera.id}`}
+            aria-label={`Details zu ${title}`}
+            className="card overflow-hidden border border-border bg-surface transition hover:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        >
             <div className="relative aspect-video bg-black/85">
                 {frameUrl !== null ? (
                     <img
@@ -70,10 +75,7 @@ function CameraTile({ camera }: CameraTileProps) {
 
                 <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs opacity-70">
                     {camera.online ? (
-                        <>
-                            {camera.fps !== null && <Stat icon={Activity}>{`${camera.fps} fps`}</Stat>}
-                            <Stat icon={Eye}>{formatCount(camera.viewers, 'Zuschauer', 'Zuschauer')}</Stat>
-                        </>
+                        camera.fps !== null && <Stat icon={Activity}>{`${camera.fps} fps`}</Stat>
                     ) : (
                         <Stat icon={Clock}>{formatRelativeTime(camera.last_seen)}</Stat>
                     )}
@@ -84,7 +86,7 @@ function CameraTile({ camera }: CameraTileProps) {
                     <Stat icon={Film}>{formatCount(camera.video_count, 'Video', 'Videos')}</Stat>
                 </ul>
             </div>
-        </article>
+        </Link>
     )
 }
 

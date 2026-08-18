@@ -15,6 +15,9 @@ services:
       - "5000:5000"
     environment:
       RECORDINGS_DIR: /data/recordings
+      MAX_RECORDING_SECONDS: 1800
+      MAX_RECORDING_FRAMES: 20000
+      MIN_FREE_DISK_MB: 2000
     volumes:
       - recordings:/data/recordings
     healthcheck:
