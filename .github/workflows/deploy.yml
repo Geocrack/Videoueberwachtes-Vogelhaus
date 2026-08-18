@@ -23,6 +23,7 @@ jobs:
           python-version: '3.12'
           cache: pip
       - run: pip install -r backend/requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: pytest
         working-directory: backend
 

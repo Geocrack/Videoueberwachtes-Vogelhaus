@@ -8,6 +8,7 @@ export function useCameras(intervalMs = POLL_INTERVAL_MS) {
     const [cameras, setCameras] = useState<Camera[]>([])
     const [error, setError] = useState<string | null>(null)
     const [loading, setLoading] = useState(true)
+    const [reloadToken, setReloadToken] = useState(0)
 
     useEffect(() => {
         const controller = new AbortController()
@@ -42,7 +43,7 @@ export function useCameras(intervalMs = POLL_INTERVAL_MS) {
             window.clearTimeout(timer)
             document.removeEventListener('visibilitychange', pollNow)
         }
-    }, [intervalMs])
+    }, [intervalMs, reloadToken])
 
-    return { cameras, error, loading }
+    return { cameras, error, loading, reload: () => setReloadToken((token) => token + 1) }
 }
