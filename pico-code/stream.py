@@ -1,16 +1,13 @@
 """
 Vogelhaus-Kamera: Arducam Mega 3MP am Raspberry Pi Pico 2 W
-Produktionsfassung.
+Produktionsfassung, korrigiert.
 
-Auf dem Pico als main.py speichern. Danach laeuft die Kamera eigenstaendig,
-sobald sie Strom bekommt, und braucht keinen Rechner mehr.
+Auf dem Pico als main.py speichern.
 
-Eigenschaften:
-  - konstante Bildrate, im laufenden Betrieb keine Konsolenausgabe
-  - Speicherbereinigung nur im verdeckten Zeitfenster nach dem Ausloesen
-  - Wiederverbindung mit ansteigender Wartezeit
-  - Watchdog und Neustart, wenn sich das Geraet dauerhaft nicht faengt
-  - Onboard-LED als Statusanzeige
+SICHERHEITSAUSSTIEG
+  BOOTSEL beim Einstecken gedrueckt halten, bis die LED aufhoert zu blinken.
+  Dann startet die Kamera nicht und du landest in der REPL. Damit kannst du
+  dich nie wieder aussperren, ohne den Flash loeschen zu muessen.
 
 Voraussetzung: camera.py (Core-Electronics-Treiber) liegt auf dem Pico.
 
@@ -26,6 +23,7 @@ import struct
 import time
 import gc
 import os
+import rp2
 import machine
 import binascii
 import select
@@ -36,7 +34,7 @@ from camera import Camera
 # ============================ Konfiguration ============================
 
 WLAN_SSID = "Georg ll WG1"
-WLAN_PASSWORT = "1mezomix24"
+WLAN_PASSWORT = ""
 
 WS_URL = "wss://vogelhaus.simgut.me/ws/camera/vogelhaus-0"
 GERAETENAME = "vogelhaus-0"
@@ -45,19 +43,21 @@ AUFLOESUNG = "320x240"
 WEISSABGLEICH = "home"
 JPEG_QUALITAET = "mittel"     # hoch | mittel | niedrig
 
-# Feste Bildrate. Muss zur Encoding-Rate des Backends passen,
-# sonst laufen die Aufnahmen zu schnell oder zu langsam.
+# Feste Bildrate, muss zur Encoding-Rate des Backends passen.
 # 200 = 5 fps, 125 = 8 fps, 100 = 10 fps
 INTERVALL_MS = 100
 
-DEBUG = False                 # True: Statusmeldungen auf der Konsole
+DEBUG = True                  # erst auf False stellen, wenn alles laeuft
 LED_STATUS = True
-STARTVERZOEGERUNG_S = 3       # Zeitfenster zum Abbrechen, bevor der Watchdog laeuft
+STARTVERZOEGERUNG_S = 5
 
-WATCHDOG = True
-NEUSTART_NACH_FEHLERN = 8     # danach harter Neustart des Pico
+# WICHTIG: erst einschalten, wenn die Verbindung zum Produktionsserver
+# nachweislich steht. Ein Watchdog auf einem noch nicht laufenden Aufbau
+# erzeugt nur eine Neustartschleife.
+WATCHDOG = False
+NEUSTART_NACH_FEHLERN = 8
 
-PUFFER_BYTES = 60000          # bei hoeherer Aufloesung anheben
+PUFFER_BYTES = 60000
 BLOCK_BYTES = 1024
 SPI_TAKT = 8_000_000
 PIN_SCK, PIN_MISO, PIN_MOSI, PIN_CS = 18, 16, 19, 17
@@ -83,7 +83,6 @@ def melde(*teile):
 
 
 def warte(sekunden):
-    """Wartet und fuettert dabei den Watchdog."""
     ende = time.ticks_add(time.ticks_ms(), int(sekunden * 1000))
     while time.ticks_diff(ende, time.ticks_ms()) > 0:
         wd()
@@ -119,7 +118,13 @@ class WebSocket:
         self.poller = None
 
     def verbinden(self):
+        # Jeder dieser Schritte kann mehrere Sekunden dauern, deshalb
+        # dazwischen fuettern. Ohne das laeuft der Watchdog ab, bevor
+        # der TLS-Handshake fertig ist.
+        wd()
         adresse = socket.getaddrinfo(self.host, self.port)[0][-1]
+
+        wd()
         s = socket.socket()
         s.settimeout(5)
         try:
@@ -128,6 +133,7 @@ class WebSocket:
             pass
         s.connect(adresse)
 
+        wd()
         if self.tls:
             import ssl
             try:
@@ -137,6 +143,7 @@ class WebSocket:
             except AttributeError:
                 s = ssl.wrap_socket(s, server_hostname=self.host)
 
+        wd()
         schluessel = binascii.b2a_base64(os.urandom(16)).strip().decode()
         s.write((
             "GET %s HTTP/1.1\r\n"
@@ -150,6 +157,7 @@ class WebSocket:
 
         antwort = b""
         while b"\r\n\r\n" not in antwort:
+            wd()
             teil = s.read(1)
             if not teil:
                 raise OSError("Verbindung waehrend des Handshakes abgebrochen")
@@ -308,7 +316,7 @@ def wlan_verbinden(neu=False):
         warte(1)
     wlan.active(True)
     try:
-        wlan.config(pm=0xa11140)      # Stromsparmodus aus
+        wlan.config(pm=0xa11140)
     except Exception:
         pass
     try:
@@ -334,22 +342,30 @@ def main():
 
     led = Pin("LED", Pin.OUT) if LED_STATUS else None
 
-    # Zeitfenster zum Abbrechen, solange der Watchdog noch nicht laeuft.
-    # Wer hier in Thonny auf Stop drueckt, kommt sicher in die REPL.
+    # Sicherheitsausstieg. Solange die LED blinkt, laeuft noch kein
+    # Watchdog. BOOTSEL gedrueckt halten bricht hier sauber ab.
     for _ in range(STARTVERZOEGERUNG_S * 4):
+        if rp2.bootsel_button():
+            if led:
+                led.off()
+            print("Sicherheitsmodus: main.py wurde nicht gestartet")
+            return
         if led:
             led.toggle()
         time.sleep_ms(250)
     if led:
         led.off()
 
-    if WATCHDOG:
-        from machine import WDT
-        _wdt = WDT(timeout=8000)
-
+    # Kamera zuerst, noch ohne Watchdog. Der Treiber hat in _wait_idle()
+    # kein Timeout, ein Verkabelungsfehler wuerde sonst zu einer
+    # Neustartschleife statt zu einer lesbaren Fehlermeldung fuehren.
     melde("Kamera wird initialisiert ...")
     cam = kamera_starten()
     melde("Kamera bereit:", cam.camera_idx, AUFLOESUNG, JPEG_QUALITAET)
+
+    if WATCHDOG:
+        from machine import WDT
+        _wdt = WDT(timeout=8000)
 
     fehler_in_folge = 0
 
@@ -360,7 +376,6 @@ def main():
             melde("WLAN:", wlan.ifconfig()[0])
 
             ws = WebSocket(WS_URL)
-            wd()
             ws.verbinden()
             ws.text_senden("%s, %s, %s, %d ms" %
                            (GERAETENAME, AUFLOESUNG, JPEG_QUALITAET, INTERVALL_MS))
@@ -380,8 +395,7 @@ def main():
                 aufnahme_ausloesen(cam)
 
                 # Ab hier bis zum Senden arbeitet die Kamera bereits.
-                # Die Bereinigung liegt bewusst genau in diesem Fenster,
-                # damit sie nie mitten in einem Frame zuschlaegt.
+                # Die Bereinigung liegt bewusst in diesem Fenster.
                 gc.collect()
 
                 if laenge:
@@ -389,6 +403,7 @@ def main():
                     gesendet += 1
                     if gesendet == 25:
                         fehler_in_folge = 0
+                        melde("Stream laeuft")
 
                 ws.eingang_verarbeiten()
 
@@ -417,7 +432,7 @@ def main():
             fehler_in_folge += 1
             melde("Fehler %d: %r" % (fehler_in_folge, e))
 
-            if fehler_in_folge >= NEUSTART_NACH_FEHLERN:
+            if WATCHDOG and fehler_in_folge >= NEUSTART_NACH_FEHLERN:
                 melde("Zu viele Fehler, Neustart")
                 time.sleep(1)
                 machine.reset()
