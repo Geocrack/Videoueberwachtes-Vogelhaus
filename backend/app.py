@@ -85,6 +85,7 @@ def camera(ws, camera_id):
                 break
 
             if isinstance(data, bytes):
+                data = rotate_frame(data)
                 last_frame = data
                 note_frame(camera_id, data)
                 save_frame_if_recording(camera_id, data)
@@ -198,6 +199,15 @@ def store_frame_size(camera_id, data):
         if state is not None:
             state["width"] = width
             state["height"] = height
+
+def rotate_frame(data):
+    try:
+        image = Image.open(BytesIO(data))
+        buffer = BytesIO()
+        image.transpose(Image.Transpose.ROTATE_180).save(buffer, format="JPEG", quality=85)
+        return buffer.getvalue()
+    except (OSError, ValueError):
+        return data
 
 
 def persist_camera_state(camera_id):
