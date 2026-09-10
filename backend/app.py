@@ -432,7 +432,7 @@ def create_video(frames_dir):
         [
             "ffmpeg", "-y", "-nostdin",
             "-loglevel", "error",
-            "-framerate", "5",
+            "-framerate", "10",
             "-i", str(frames_dir / "frame_%06d.jpg"),
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",

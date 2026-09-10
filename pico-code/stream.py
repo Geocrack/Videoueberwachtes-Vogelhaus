@@ -260,6 +260,8 @@ def kamera_starten():
     cam.set_white_balance(WEISSABGLEICH)
     cam._write_reg(cam.CAM_REG_IMAGE_QUALITY, _QUALITAETSWERTE[JPEG_QUALITAET])
     cam._wait_idle()
+    cam._write_reg(0x27, 0x03)
+    cam._wait_idle()
     cam.capture_jpg()
     return cam
 
