@@ -14,24 +14,6 @@ function Header() {
                 </h1>
 
                 <nav aria-label="Hauptaktionen" className="flex shrink-0 items-center gap-0.5 sm:gap-1">
-                    <button
-                        type="button"
-                        title="Über dieses Projekt"
-                        aria-label="Über dieses Projekt"
-                        className="btn btn-ghost btn-circle btn-sm sm:btn-md"
-                    >
-                        <Info className="size-5" aria-hidden="true" />
-                    </button>
-
-                    <button
-                        type="button"
-                        title="Einstellungen"
-                        aria-label="Einstellungen"
-                        className="btn btn-ghost btn-circle btn-sm sm:btn-md"
-                    >
-                        <Settings className="size-5" aria-hidden="true" />
-                    </button>
-
                     <ThemeToggle />
                 </nav>
             </div>
