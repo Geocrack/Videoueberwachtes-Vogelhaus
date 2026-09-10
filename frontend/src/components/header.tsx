@@ -1,4 +1,3 @@
-import { Info, Settings } from 'lucide-react'
 import { Link } from 'react-router'
 
 import ThemeToggle from './theme-toggle.tsx'
