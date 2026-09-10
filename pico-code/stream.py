@@ -33,14 +33,14 @@ from camera import Camera
 
 # ============================ Konfiguration ============================
 
-WLAN_SSID = "Georg ll WG1"
+WLAN_SSID = ""
 WLAN_PASSWORT = ""
 
 WS_URL = "wss://vogelhaus.simgut.me/ws/camera/vogelhaus-0"
 GERAETENAME = "vogelhaus-0"
 
 AUFLOESUNG = "320x240"
-WEISSABGLEICH = "home"
+WEISSABGLEICH = "auto"
 JPEG_QUALITAET = "mittel"     # hoch | mittel | niedrig
 
 # Feste Bildrate, muss zur Encoding-Rate des Backends passen.
@@ -146,14 +146,14 @@ class WebSocket:
         wd()
         schluessel = binascii.b2a_base64(os.urandom(16)).strip().decode()
         s.write((
-            "GET %s HTTP/1.1\r\n"
-            "Host: %s\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n"
-            "\r\n" % (self.pfad, self.host, schluessel)
-        ).encode())
+                        "GET %s HTTP/1.1\r\n"
+                        "Host: %s\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        "Sec-WebSocket-Key: %s\r\n"
+                        "Sec-WebSocket-Version: 13\r\n"
+                        "\r\n" % (self.pfad, self.host, schluessel)
+                ).encode())
 
         antwort = b""
         while b"\r\n\r\n" not in antwort:
@@ -260,8 +260,9 @@ def kamera_starten():
     cam.set_white_balance(WEISSABGLEICH)
     cam._write_reg(cam.CAM_REG_IMAGE_QUALITY, _QUALITAETSWERTE[JPEG_QUALITAET])
     cam._wait_idle()
-    cam._write_reg(0x27, 0x03)
+    cam._write_reg(cam.CAM_REG_EXPOSURE_CONTROL, cam.EXPOSURE_PLUS_1)
     cam._wait_idle()
+    cam.set_contrast(cam.CONTRAST_MINUS_1)
     cam.capture_jpg()
     return cam
 
@@ -446,3 +447,5 @@ def main():
 
 
 main()
+
+
