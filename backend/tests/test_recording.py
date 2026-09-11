@@ -6,17 +6,20 @@ import app as app_module
 
 
 def make_client(tmp_path, monkeypatch):
+    # Gives a test client whose recordings land in an empty temporary folder.
     monkeypatch.setattr(app_module, "RECORDINGS_DIR", tmp_path)
     return app_module.app.test_client()
 
 
 def jpeg_frame():
+    # Gives a small JPEG that ffmpeg can decode.
     buffer = BytesIO()
     Image.new("RGB", (64, 48), "green").save(buffer, "JPEG")
     return buffer.getvalue()
 
 
 def record_video(client, camera_id, name=None):
+    # Runs a complete recording and gives back the file name of the resulting MP4.
     client.post(f"/api/cameras/{camera_id}/recording/start")
     for _ in range(3):
         app_module.save_frame_if_recording(camera_id, jpeg_frame())
@@ -28,6 +31,7 @@ def record_video(client, camera_id, name=None):
 
 
 def test_start_and_stop_without_frames(tmp_path, monkeypatch):
+    # Tests that only one recording per camera runs and that one without frames saves nothing.
     client = make_client(tmp_path, monkeypatch)
 
     assert client.post("/api/cameras/cam-a/recording/start").status_code == 200
@@ -41,6 +45,7 @@ def test_start_and_stop_without_frames(tmp_path, monkeypatch):
 
 
 def test_frames_are_saved_while_recording(tmp_path, monkeypatch):
+    # Tests that every frame lands on disk immediately, numbered consecutively from one.
     client = make_client(tmp_path, monkeypatch)
 
     client.post("/api/cameras/cam-b/recording/start")
@@ -55,6 +60,7 @@ def test_frames_are_saved_while_recording(tmp_path, monkeypatch):
 
 
 def test_nothing_is_saved_without_recording(tmp_path, monkeypatch):
+    # Tests that frames are dropped while no recording runs, without creating a folder.
     make_client(tmp_path, monkeypatch)
 
     app_module.save_frame_if_recording("cam-c", b"\xff\xd8frame")
@@ -62,6 +68,7 @@ def test_nothing_is_saved_without_recording(tmp_path, monkeypatch):
 
 
 def test_video_list_is_empty_initially(tmp_path, monkeypatch):
+    # Tests that a camera without recordings answers with an empty list instead of an error.
     client = make_client(tmp_path, monkeypatch)
 
     response = client.get("/api/cameras/cam-d/videos")
@@ -70,6 +77,7 @@ def test_video_list_is_empty_initially(tmp_path, monkeypatch):
 
 
 def test_recording_is_saved_with_the_given_name(tmp_path, monkeypatch):
+    # Tests that the name given when stopping shows up as the trimmed title in the video list.
     client = make_client(tmp_path, monkeypatch)
 
     video_name = record_video(client, "cam-g", "  Blaumeise am Futterhaus  ")
@@ -83,6 +91,7 @@ def test_recording_is_saved_with_the_given_name(tmp_path, monkeypatch):
 
 
 def test_video_can_be_renamed_afterwards(tmp_path, monkeypatch):
+    # Tests that a video can be given a title later and that an empty name removes it again.
     client = make_client(tmp_path, monkeypatch)
 
     video_name = record_video(client, "cam-h")
@@ -98,6 +107,7 @@ def test_video_can_be_renamed_afterwards(tmp_path, monkeypatch):
 
 
 def test_video_can_be_deleted(tmp_path, monkeypatch):
+    # Tests that deleting removes file, list entry and title, and that a second one finds nothing.
     client = make_client(tmp_path, monkeypatch)
 
     video_name = record_video(client, "cam-j", "Specht")
@@ -112,6 +122,7 @@ def test_video_can_be_deleted(tmp_path, monkeypatch):
 
 
 def test_renaming_an_unknown_video_is_rejected(tmp_path, monkeypatch):
+    # Tests that a title is only stored for a video that exists.
     client = make_client(tmp_path, monkeypatch)
 
     response = client.put("/api/cameras/cam-i/videos/2026-01-01_00-00-00/name", json={"name": "x"})
@@ -119,6 +130,7 @@ def test_renaming_an_unknown_video_is_rejected(tmp_path, monkeypatch):
 
 
 def test_recording_is_stopped_when_the_time_limit_is_reached(tmp_path, monkeypatch):
+    # Tests that a recording running too long is reported as overdue and saved automatically.
     client = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(app_module, "MAX_RECORDING_SECONDS", 60)
 
@@ -137,6 +149,7 @@ def test_recording_is_stopped_when_the_time_limit_is_reached(tmp_path, monkeypat
 
 
 def test_recording_is_stopped_when_the_frame_limit_is_reached(tmp_path, monkeypatch):
+    # Tests that a recording with too many frames is reported as overdue and saved automatically.
     client = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(app_module, "MAX_RECORDING_FRAMES", 3)
 
@@ -152,6 +165,7 @@ def test_recording_is_stopped_when_the_frame_limit_is_reached(tmp_path, monkeypa
 
 
 def test_recording_is_stopped_and_refused_when_disk_is_full(tmp_path, monkeypatch):
+    # Tests that a running recording is saved when the disk runs full and no new one starts.
     client = make_client(tmp_path, monkeypatch)
 
     client.post("/api/cameras/cam-m/recording/start")
@@ -168,6 +182,7 @@ def test_recording_is_stopped_and_refused_when_disk_is_full(tmp_path, monkeypatc
 
 
 def test_unwritable_frames_do_not_break_the_camera_connection(tmp_path, monkeypatch):
+    # Tests that a frame which cannot be written does not raise and does not use up a number.
     client = make_client(tmp_path, monkeypatch)
 
     client.post("/api/cameras/cam-n/recording/start")
@@ -180,6 +195,7 @@ def test_unwritable_frames_do_not_break_the_camera_connection(tmp_path, monkeypa
 
 
 def test_interrupted_recording_is_recovered(tmp_path, monkeypatch):
+    # Tests that frame folders left over after a crash become videos and empty ones are removed.
     client = make_client(tmp_path, monkeypatch)
 
     client.post("/api/cameras/cam-o/recording/start")
@@ -199,6 +215,7 @@ def test_interrupted_recording_is_recovered(tmp_path, monkeypatch):
 
 
 def test_invalid_names_are_rejected(tmp_path, monkeypatch):
+    # Tests that names from the URL cannot point out of the recordings folder.
     client = make_client(tmp_path, monkeypatch)
 
     # Names with special characters do not match any route -> 404
@@ -207,6 +224,7 @@ def test_invalid_names_are_rejected(tmp_path, monkeypatch):
 
 
 def test_camera_info_is_saved_and_listed(tmp_path, monkeypatch):
+    # Tests that camera info is stored and listed, and a camera without a connection is offline.
     client = make_client(tmp_path, monkeypatch)
 
     info = {"name": "Garten", "location": "Apfelbaum", "description": "Testhaus"}
