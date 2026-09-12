@@ -48,6 +48,7 @@ def camera_dir(camera_id):
 
 
 def write_atomic(path, data):
+    # Write to a temp file first so readers never see a half-written poster or state file
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     tmp_path.write_bytes(data)
@@ -173,6 +174,7 @@ def note_frame(camera_id, data):
         if write_poster:
             state["poster_written_at"] = now
 
+    # Disk and image work happens outside the lock so other cameras are not blocked
     if needs_size:
         store_frame_size(camera_id, data)
     if write_state:
@@ -201,6 +203,7 @@ def store_frame_size(camera_id, data):
             state["height"] = height
 
 def rotate_frame(data):
+    # The camera is mounted upside down in the bird house
     try:
         image = Image.open(BytesIO(data))
         buffer = BytesIO()
@@ -234,6 +237,7 @@ def note_camera_disconnected(camera_id, last_frame=None):
         if state is None:
             return
 
+        # A reconnecting camera can overlap with its old connection, so only the last one closes the state
         state["connections"] = max(0, state["connections"] - 1)
         if state["connections"] > 0:
             return
@@ -284,6 +288,7 @@ def camera_snapshot(camera_id):
             "height": stored.get("height"),
         }
 
+    # An open socket alone is not enough, the camera must have sent a frame recently
     online = (
         connected
         and last_frame_at is not None
@@ -317,6 +322,7 @@ def save_frame_if_recording(camera_id, data):
     try:
         frame_path.write_bytes(data)
     except OSError as error:
+        # Roll back the counter, ffmpeg needs a gapless frame sequence
         with state_lock:
             current = recordings.get(camera_id)
             if current is recording:
@@ -409,6 +415,7 @@ def stop_overdue_recordings():
 
 
 def recover_interrupted_recordings():
+    # Frame folders left behind by a crash or restart are turned into videos on startup
     for frames_dir in sorted(RECORDINGS_DIR.glob("*/*/")):
         if not frames_dir.is_dir():
             continue
@@ -573,6 +580,7 @@ def list_cameras():
             "has_poster": False,
         })
 
+    # Sorts are stable, so the last key wins: online first, then most recently seen, then id
     cameras.sort(key=lambda camera: camera["id"])
     cameras.sort(key=lambda camera: camera["last_seen"] or "", reverse=True)
     cameras.sort(key=lambda camera: not camera["online"])
@@ -587,6 +595,7 @@ def get_poster(camera_id):
         abort(404)
 
     response = send_file(poster_path, mimetype="image/jpeg")
+    # Same URL, changing image: the browser must revalidate instead of caching
     response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -600,6 +609,7 @@ def save_camera_info(camera_id):
     return jsonify(status="saved")
 
 
+# Started at import time so the watchdog also runs under gunicorn, not only with app.run()
 threading.Thread(target=recording_watchdog, name="recording-watchdog", daemon=True).start()
 
 
