@@ -1,13 +1,25 @@
 """
 Vogelhaus-Kamera: Arducam Mega 3MP am Raspberry Pi Pico 2 W
-Produktionsfassung, korrigiert.
 
-Auf dem Pico als main.py speichern.
+SICHERHEITSAUSSTIEG (zwei Wege)
+  A) Beim Start: Pico einstecken, warten bis die LED langsam blinkt,
+     DANN BOOTSEL druecken. Nicht beim Einstecken gedrueckt halten,
+     sonst landet der Pico im ROM-Bootloader statt in MicroPython.
+  B) Im laufenden Betrieb: BOOTSEL etwa zwei Sekunden gedrueckt halten.
+     Der Pico legt eine Markierungsdatei an und startet neu. Beim
+     Hochfahren beendet er sich dann, bevor der Watchdog scharf wird.
 
-SICHERHEITSAUSSTIEG
-  BOOTSEL beim Einstecken gedrueckt halten, bis die LED aufhoert zu blinken.
-  Dann startet die Kamera nicht und du landest in der REPL. Damit kannst du
-  dich nie wieder aussperren, ohne den Flash loeschen zu muessen.
+  In beiden Faellen leuchtet die LED danach dauerhaft.
+  Das ist noetig, weil ein einmal gestarteter Watchdog nicht mehr
+  abschaltbar ist und die REPL sonst nach acht Sekunden wegbricht.
+
+LED-MUSTER
+  langsames Blinken (2x/s)   Startfenster, BOOTSEL bricht ab
+  Dauerlicht                 Sicherheitsmodus, Skript beendet
+  schnelles Blinken (5x/s)   WLAN-Verbindung wird aufgebaut
+  aus, Blitz alle 2 s        Stream laeuft
+  Doppelblitz pro Sekunde    Fehler, wartet auf neuen Versuch
+  dauerhaft aus              Kamerastart oder TLS-Handshake
 
 Voraussetzung: camera.py (Core-Electronics-Treiber) liegt auf dem Pico.
 
@@ -47,15 +59,20 @@ JPEG_QUALITAET = "mittel"     # hoch | mittel | niedrig
 # 200 = 5 fps, 125 = 8 fps, 100 = 10 fps
 INTERVALL_MS = 100
 
-DEBUG = True                  # erst auf False stellen, wenn alles laeuft
+DEBUG = False
 LED_STATUS = True
 STARTVERZOEGERUNG_S = 5
 
-# WICHTIG: erst einschalten, wenn die Verbindung zum Produktionsserver
-# nachweislich steht. Ein Watchdog auf einem noch nicht laufenden Aufbau
-# erzeugt nur eine Neustartschleife.
-WATCHDOG = False
+WATCHDOG = True
 NEUSTART_NACH_FEHLERN = 8
+
+# BOOTSEL-Abfrage waehrend des Streams. Der Aufruf greift kurz auf die
+# Flash-Chipselect-Leitung zu, deshalb nicht in jedem Durchlauf.
+BOOTSEL_IM_BETRIEB = True
+BOOTSEL_PRUEFUNG_ALLE = 10    # Frames, bei 10 fps also einmal pro Sekunde
+SICHER_FLAG = "safe_mode.flag"
+
+HERZSCHLAG_FRAMES = 20        # Blitz alle 20 Frames
 
 PUFFER_BYTES = 60000
 BLOCK_BYTES = 1024
@@ -70,6 +87,11 @@ _QUALITAETSWERTE = {"hoch": 0, "mittel": 1, "niedrig": 2}
 # ============================ Hilfsmittel ============================
 
 _wdt = None
+_led = None
+
+
+class BootselAbbruch(Exception):
+    """Wird geworfen, wenn BOOTSEL im Betrieb gedrueckt wurde."""
 
 
 def wd():
@@ -82,11 +104,85 @@ def melde(*teile):
         print(*teile)
 
 
+def bootsel_gedrueckt():
+    try:
+        return rp2.bootsel_button() == 1
+    except Exception:
+        return False
+
+
+def flag_vorhanden():
+    try:
+        os.stat(SICHER_FLAG)
+        return True
+    except OSError:
+        return False
+
+
+def flag_setzen():
+    try:
+        with open(SICHER_FLAG, "w") as f:
+            f.write("1")
+        return True
+    except OSError as e:
+        melde("Markierung konnte nicht geschrieben werden:", e)
+        return False
+
+
+def flag_loeschen():
+    try:
+        os.remove(SICHER_FLAG)
+    except OSError:
+        pass
+
+
+_WARTEMUSTER = (1, 0, 1, 0, 0, 0, 0, 0, 0, 0)   # Doppelblitz pro Sekunde
+
+
 def warte(sekunden):
+    """Wartet, fuettert den Watchdog und zeigt das Fehlermuster."""
     ende = time.ticks_add(time.ticks_ms(), int(sekunden * 1000))
+    i = 0
     while time.ticks_diff(ende, time.ticks_ms()) > 0:
         wd()
-        time.sleep_ms(200)
+        if _led:
+            _led.value(_WARTEMUSTER[i % 10])
+        i += 1
+        time.sleep_ms(100)
+    if _led:
+        _led.off()
+
+
+def sicherheitsmodus_anzeigen():
+    """Kurzes Stroboskop, danach Dauerlicht."""
+    if _led:
+        for _ in range(24):
+            _led.toggle()
+            time.sleep_ms(40)
+        _led.on()
+    print()
+    print("=" * 52)
+    print("  SICHERHEITSMODUS")
+    print("  Das Kameraskript wurde NICHT gestartet.")
+    print("  LED leuchtet dauerhaft, kein Watchdog aktiv.")
+    print("=" * 52)
+
+
+def startfenster():
+    """Wartet und laesst sich per BOOTSEL abbrechen. True = abbrechen.
+
+    Abfrage alle 50 ms statt alle 250 ms, damit der Knopfdruck
+    zuverlaessig erkannt wird.
+    """
+    for i in range(STARTVERZOEGERUNG_S * 20):
+        if bootsel_gedrueckt():
+            return True
+        if _led and i % 5 == 0:
+            _led.toggle()
+        time.sleep_ms(50)
+    if _led:
+        _led.off()
+    return False
 
 
 # ============================ WebSocket ============================
@@ -328,11 +424,15 @@ def wlan_verbinden(neu=False):
         pass
     if not wlan.isconnected():
         wlan.connect(WLAN_SSID, WLAN_PASSWORT)
-        for _ in range(60):
+        for _ in range(300):            # 30 s, LED blinkt schnell
             wd()
             if wlan.isconnected():
                 break
-            time.sleep_ms(500)
+            if _led:
+                _led.toggle()
+            time.sleep_ms(100)
+    if _led:
+        _led.off()
     if not wlan.isconnected():
         raise OSError("WLAN-Verbindung fehlgeschlagen")
     return wlan
@@ -341,23 +441,21 @@ def wlan_verbinden(neu=False):
 # ============================ Hauptprogramm ============================
 
 def main():
-    global _wdt
+    global _wdt, _led
 
-    led = Pin("LED", Pin.OUT) if LED_STATUS else None
+    _led = Pin("LED", Pin.OUT) if LED_STATUS else None
 
-    # Sicherheitsausstieg. Solange die LED blinkt, laeuft noch kein
-    # Watchdog. BOOTSEL gedrueckt halten bricht hier sauber ab.
-    for _ in range(STARTVERZOEGERUNG_S * 4):
-        if rp2.bootsel_button():
-            if led:
-                led.off()
-            print("Sicherheitsmodus: main.py wurde nicht gestartet")
-            return
-        if led:
-            led.toggle()
-        time.sleep_ms(250)
-    if led:
-        led.off()
+    # Weg B: Beim letzten Lauf wurde BOOTSEL im Betrieb gedrueckt.
+    # Hier aussteigen, bevor der Watchdog scharf wird.
+    if flag_vorhanden():
+        flag_loeschen()
+        sicherheitsmodus_anzeigen()
+        return
+
+    # Weg A: Startfenster, noch ohne Watchdog.
+    if startfenster():
+        sicherheitsmodus_anzeigen()
+        return
 
     # Kamera zuerst, noch ohne Watchdog. Der Treiber hat in _wait_idle()
     # kein Timeout, ein Verkabelungsfehler wuerde sonst zu einer
@@ -382,12 +480,12 @@ def main():
             ws.verbinden()
             ws.text_senden("%s, %s, %s, %d ms" %
                            (GERAETENAME, AUFLOESUNG, JPEG_QUALITAET, INTERVALL_MS))
-            if led:
-                led.on()
             melde("WebSocket verbunden")
 
             naechster = time.ticks_ms()
             gesendet = 0
+            takt = 0
+            bootsel_zaehler = 0
 
             aufnahme_ausloesen(cam)
 
@@ -401,6 +499,13 @@ def main():
                 # Die Bereinigung liegt bewusst in diesem Fenster.
                 gc.collect()
 
+                if BOOTSEL_IM_BETRIEB:
+                    bootsel_zaehler += 1
+                    if bootsel_zaehler >= BOOTSEL_PRUEFUNG_ALLE:
+                        bootsel_zaehler = 0
+                        if bootsel_gedrueckt():
+                            raise BootselAbbruch()
+
                 if laenge:
                     ws.bild_senden(SICHT, laenge)
                     gesendet += 1
@@ -410,6 +515,16 @@ def main():
 
                 ws.eingang_verarbeiten()
 
+                # Herzschlag: kurzer Blitz statt Dauerlicht, damit man
+                # eine laufende Schleife von einer eingefrorenen unterscheidet.
+                if _led:
+                    takt += 1
+                    if takt == HERZSCHLAG_FRAMES:
+                        _led.on()
+                    elif takt > HERZSCHLAG_FRAMES:
+                        _led.off()
+                        takt = 0
+
                 naechster = time.ticks_add(naechster, INTERVALL_MS)
                 rest = time.ticks_diff(naechster, time.ticks_ms())
                 if rest > 0:
@@ -417,23 +532,41 @@ def main():
                 else:
                     naechster = time.ticks_ms()
 
+        except BootselAbbruch:
+            if ws:
+                ws.schliessen()
+            melde("BOOTSEL erkannt, Neustart in den Sicherheitsmodus")
+            if flag_setzen():
+                time.sleep_ms(300)
+                machine.reset()
+            # Markierung liess sich nicht schreiben: hier bleibt nur,
+            # normal weiterzulaufen, sonst greift der Watchdog.
+            warte(2)
+
         except KeyboardInterrupt:
-            if led:
-                led.off()
+            if _led:
+                _led.off()
             if ws:
                 ws.schliessen()
             melde("Beendet")
             return
 
         except Exception as e:
-            if led:
-                led.off()
+            if _led:
+                _led.off()
             if ws:
                 ws.schliessen()
             ws = None
             gc.collect()
             fehler_in_folge += 1
             melde("Fehler %d: %r" % (fehler_in_folge, e))
+
+            if fehler_in_folge == 2:
+                melde("Kamera wird neu initialisiert")
+                try:
+                    cam = kamera_starten()
+                except Exception as e2:
+                    melde("Kamera-Neustart fehlgeschlagen:", repr(e2))
 
             if WATCHDOG and fehler_in_folge >= NEUSTART_NACH_FEHLERN:
                 melde("Zu viele Fehler, Neustart")
@@ -447,5 +580,3 @@ def main():
 
 
 main()
-
-
